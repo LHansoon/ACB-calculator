@@ -1,9 +1,7 @@
-
+import pandas
 import requests
-import csv
-from datetime import datetime, timedelta
 from decimal import Decimal
-
+import pandas as pd
 
 def get_exchange_rate(start_date, end_date, target_currency_code="USDCAD"):
     code = f"FX{target_currency_code}"
@@ -25,75 +23,138 @@ def get_exchange_rate(start_date, end_date, target_currency_code="USDCAD"):
     else:
         print(f"Error fetching data: {response.status_code}")
 
-def read_csv_to_dict(file_path):
-    with open(file_path, mode='r', encoding='utf-8') as file:
-        reader = csv.DictReader(file)
-        data = [row for row in reader]
-    return data
+
+DTYPE_MAPPING = {
+    "security"            : "string",
+    "type"                : "string",
+    "total_or_share"      : "string",
+    "amount"              : "Float64",
+    "shares"              : "Float64",
+    "commission"          : "Float64",
+    "fx"                  : "Float64",
+    "is_price_fx"         : "boolean",
+    "is_commission_fx"    : "boolean",
+    "currency"            : "string",
+    "in_day_id"           : "string"
+}
+
+
+def sanitize_wealthsimple(file_path):
+    MAPPING = {
+        "transaction": "type",
+        "symbol": "security",
+        "share": "shares"
+    }
+
+    # rename cols
+    df = pd.read_csv(file_path)
+    df = df.rename(columns=MAPPING)
+
+    # remove and add columns
+    col_to_keep = ["date", "type", "amount", "currency", "security", "shares"]
+    col_to_add  = {"commission": 0,
+                   "total_or_share": "Total",
+                   "fx": pandas.NA,
+                   "is_price_fx": pandas.NA,
+                   "is_commission_fx": True,
+                   "account": "wealthsimple",
+                   "in_day_id": pandas.NA
+                   }
+    df = df[col_to_keep]
+    df = df.assign(**col_to_add)
+
+    # set datatype
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.astype(DTYPE_MAPPING)
+
+    # filter out base on transaction type
+    types = ["BUYTOOPEN", "SELLTOCLOSE", "CONT", "FEE", "REFER", "TRFIN", "TRFOUT"]
+    df = df[~df["type"].isin(types)]
+
+    # adding in day incremental id, start from 0
+    df["in_day_id"] = df.groupby("date").cumcount()
+
+    return df
+
+
+def sanitize_questrade(file_path):
+    MAPPING = {
+        "Settlement Date": "date",
+        "Action": "type",
+        "Symbol": "security",
+        "Quantity": "shares",
+        "Gross Amount": "amount",
+        "Commission": "commission",
+        "Currency": "currency"
+    }
+    df = pd.read_csv(file_path)
+    df = df.rename(columns=MAPPING)
+    col_to_keep = ["date", "type", "amount", "currency", "security", "shares", "commission"]
+    col_to_add  = {"total_or_share": "Total",
+                   "fx": pandas.NA,
+                   "is_price_fx": pandas.NA,
+                   "is_commission_fx": pandas.NA,
+                   "account": "questrade",
+                   "in_day_id": pandas.NA
+                   }
+    df = df[col_to_keep]
+    df = df.assign(**col_to_add)
+
+    # set datatype
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.astype(DTYPE_MAPPING)
+
+    # filter out base on transaction type
+    types = ["DEP", "EFT", "FCH", "CON"]
+    df = df[~df["type"].isin(types)]
+
+    # adding in day incremental id, start from 0
+    # Questrade have the oldest data at the bottom, so we need to reverse it for a sec
+    df["in_day_id"] = df.iloc[::-1].groupby("date").cumcount()
+
+    return df
+
+
+def sanitize(file, type):
+    sanitizers = {
+        "wealthsimple": sanitize_wealthsimple,
+        "questrade": sanitize_questrade
+    }
+    return sanitizers.get(type)(file)
+
 
 def main():
     start_date = "2023-01-01"
-    end_date = "2024-12-31"
+    end_date = "2025-02-27"
+
+    # Get exchange rate from Canadian Central Bank
     usd_cad = get_exchange_rate(start_date, end_date, "USDCAD")
     cad_usd = get_exchange_rate(start_date, end_date, "CADUSD")
 
-    csv_data = read_csv_to_dict("test_file.csv")
-    ACB = 0
-    total_shares = 0
-    total_capital_gain = 0
+    source_files = {
+        "Questrade.csv": "questrade",
+        "WS_temp.csv"  : "wealthsimple"
+    }
 
-    csv_data = sorted(csv_data, key=lambda x: x["date"])
-    for i in range(len(csv_data)):
-        row = csv_data[i]
-        date = row.get("date")
-        action = row.get("action")
-        fmv = Decimal(row.get("FMV", 0)) if row.get("FMV", 0) != "" else 0
-        shares = Decimal(row.get("shares", 0)) if row.get("shares", 0) != "" else 0
-        fee = Decimal(row.get("fee")) if row.get("fee", 0) != "" else 0
+    file_dfs = []
+    for file in source_files.keys():
+        file_dfs.append(sanitize(file, source_files.get(file)))
 
-        usd_cad_today = usd_cad.get(date)
-        cad_usd_today = cad_usd.get(date)
+    df = pd.concat(file_dfs, ignore_index=True)
+    df = df.sort_values(
+        by=["date", "in_day_id"],
+        ascending=[True, True],
+        kind="mergesort"
+    )
 
-        # TODO: 这个待定，就是说判断是不是要convert，更进一步的话，从哪个货币convert
-        if True:
-            fmv *= usd_cad_today
-            fee *= usd_cad_today
+    df.to_csv("output.csv", index=False)
 
-        if action == "PURCHASE":
-            cost = shares * fmv + fee
-            ACB += cost
-            total_shares += shares
-
-        else:
-            # =([Share Price] x [Number of Shares Sold]) – [Transaction Costs] – (([Total ACB] / [Previous Number of Shares]) x [Number of Shares Sold])
-            capital_gain = (fmv * shares) - fee - (ACB / total_shares * shares)
-
-            # [Previous Total ACB] – ([ACB per Share] x [Number of Shares Sold])
-            ACB = ACB - ACB / total_shares * shares
-
-            total_shares -= shares
-
-            # TODO: 这里应该是or i> 0，因为rule适用于前后三十天。
-            if capital_gain < 0 and (i < len(csv_data) - 1 and i > 0):
-                previous_date_object = datetime.strptime(csv_data[i - 1].get("date"), '%Y-%m-%d')
-                current_date_object = datetime.strptime(date, '%Y-%m-%d')
-                next_date_object = datetime.strptime(csv_data[i + 1].get("date"), '%Y-%m-%d')
-
-                # https://www.adjustedcostbase.ca/blog/what-is-the-superficial-loss-rule/
-                if current_date_object - timedelta(days = 30) <= previous_date_object or current_date_object + timedelta(days = 30) >= next_date_object:
-                    ACB -= capital_gain # 这里capital gain是个负数，所以实际上是加回了ACB
-                    capital_gain = 0
-
-            total_capital_gain += capital_gain
-
-
-    print(total_capital_gain)
-
-
-
-
-
-
+    # 他妈的这些东西都是同一天在不同券商交易的东西，我真是草了
+    filtered_df = df[
+        df.groupby(["date", "security"])["account"]
+        .transform("nunique") > 1
+        ]
+    filtered_df.to_csv("problematic_entries.csv", index=False)
 
 
 main()
