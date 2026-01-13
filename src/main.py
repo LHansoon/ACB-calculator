@@ -2,6 +2,7 @@ import pandas
 import requests
 from decimal import Decimal
 import pandas as pd
+import uuid
 
 def get_exchange_rate(start_date, end_date, target_currency_code="USDCAD"):
     code = f"FX{target_currency_code}"
@@ -28,10 +29,10 @@ DTYPE_MAPPING = {
     "security"            : "string",
     "type"                : "string",
     "total_or_share"      : "string",
-    "amount"              : "Float64",
-    "shares"              : "Float64",
-    "commission"          : "Float64",
-    "fx"                  : "Float64",
+    "amount"              : "object",
+    "shares"              : "object",
+    "commission"          : "object",
+    "fx"                  : "object",
     "is_price_fx"         : "boolean",
     "is_commission_fx"    : "boolean",
     "currency"            : "string",
@@ -56,7 +57,7 @@ def sanitize_wealthsimple(file_path):
                    "total_or_share": "Total",
                    "fx": pandas.NA,
                    "is_price_fx": pandas.NA,
-                   "is_commission_fx": True,
+                   "is_commission_fx": False,
                    "account": "wealthsimple",
                    "in_day_id": pandas.NA
                    }
@@ -66,6 +67,11 @@ def sanitize_wealthsimple(file_path):
     # set datatype
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.astype(DTYPE_MAPPING)
+
+    # convert datatype
+    df["amount"] = df["amount"].map(lambda x: Decimal(str(x))).astype("object")
+    df["shares"] = df["shares"].map(lambda x: Decimal(str(x))).astype("object")
+    df["commission"] = df["commission"].map(lambda x: Decimal(str(x))).astype("object")
 
     # filter out base on transaction type
     types = ["BUYTOOPEN", "SELLTOCLOSE", "CONT", "FEE", "REFER", "TRFIN", "TRFOUT"]
@@ -93,7 +99,7 @@ def sanitize_questrade(file_path):
     col_to_add  = {"total_or_share": "Total",
                    "fx": pandas.NA,
                    "is_price_fx": pandas.NA,
-                   "is_commission_fx": pandas.NA,
+                   "is_commission_fx": False,
                    "account": "questrade",
                    "in_day_id": pandas.NA
                    }
@@ -104,13 +110,17 @@ def sanitize_questrade(file_path):
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.astype(DTYPE_MAPPING)
 
+    # convert datatype
+    df["amount"] = df["amount"].map(lambda x: Decimal(str(x))).astype("object")
+    df["shares"] = df["shares"].map(lambda x: Decimal(str(x))).astype("object")
+    df["commission"] = df["commission"].map(lambda x: Decimal(str(x))).astype("object")
+
     # filter out base on transaction type
     types = ["DEP", "EFT", "FCH", "CON"]
     df = df[~df["type"].isin(types)]
 
     # adding in day incremental id, start from 0
-    # Questrade have the oldest data at the bottom, so we need to reverse it for a sec
-    df["in_day_id"] = df.iloc[::-1].groupby("date").cumcount()
+    df["in_day_id"] = df.groupby("date").cumcount()
 
     return df
 
@@ -125,11 +135,10 @@ def sanitize(file, type):
 
 def main():
     start_date = "2023-01-01"
-    end_date = "2025-02-27"
+    end_date = "2025-12-31"
 
     # Get exchange rate from Canadian Central Bank
     usd_cad = get_exchange_rate(start_date, end_date, "USDCAD")
-    cad_usd = get_exchange_rate(start_date, end_date, "CADUSD")
 
     source_files = {
         "Questrade.csv": "questrade",
@@ -147,9 +156,15 @@ def main():
         kind="mergesort"
     )
 
+    # 更新一下这个flag
+    df["is_price_fx"]      = df["currency"] != "CAD"
+    df["is_commission_fx"] = df["currency"] != "CAD"
+    # 这里是因为date这个column实际上是date。。所以需要改成str再去map
+    df["fx"] = df["date"].dt.strftime("%Y-%m-%d").map(usd_cad)
+
     df.to_csv("output.csv", index=False)
 
-    # 他妈的这些东西都是同一天在不同券商交易的东西，我真是草了
+    # 这里输出的东西就是需要修改的内容的提示
     filtered_df = df[
         df.groupby(["date", "security"])["account"]
         .transform("nunique") > 1
