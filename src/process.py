@@ -70,12 +70,12 @@ class PendingLoss:
 
 def main():
     ap = argparse.ArgumentParser(description="ACB + Superficial Loss Calculator (Canada)")
-    ap.add_argument("--input_csv", default="output.csv", help="Input trades CSV (default: trades.csv)")
+    ap.add_argument("--input_csv", default="result/combined_trades.csv", help="Input trades CSV (default: result/combined_trades.csv)")
     ap.add_argument("--report_ccy", default="CAD", help="Reporting currency (default: CAD)")
-    ap.add_argument("--annual_out", default="final_result/annual_pl.csv", help="Annual realized P/L output CSV")
-    ap.add_argument("--detail_out", default="final_result/realized_trades.csv", help="Per-sell detail output CSV")
-    ap.add_argument("--augmented_out", default="final_result/augmented_with_acb.csv",
-                    help="Augmented output (input + realtime ACB col). Default: augmented_with_acb.csv")
+    ap.add_argument("--annual_out", default="result/annual_pl.csv", help="Annual realized P/L output CSV")
+    ap.add_argument("--detail_out", default="result/realized_trades.csv", help="Per-sell detail output CSV")
+    ap.add_argument("--augmented_out", default="result/augmented_with_acb.csv",
+                    help="Augmented output (input + realtime ACB col). Default: result/augmented_with_acb.csv")
     args = ap.parse_args()
 
     # State per symbol
@@ -176,7 +176,9 @@ def main():
                     raise ValueError(
                         f"SELL exceeds holdings: {sym} trying to sell {qty} but only {shares_held[sym]} held on {row_date}"
                     )
-                proceeds = gross_report - comm_report
+                gross_proceeds = gross_report
+                sell_commission = comm_report
+                proceeds = gross_proceeds - sell_commission
 
                 if shares_held[sym] > D0:
                     avg_cost = acb_total[sym] / shares_held[sym]
@@ -206,6 +208,8 @@ def main():
                     "year": row_date.year,
                     "symbol": sym,
                     "shares_sold": qty,
+                    "gross_proceeds_report_ccy": gross_proceeds,
+                    "sell_commission_report_ccy": sell_commission,
                     "proceeds_report_ccy": proceeds,
                     "cost_basis_report_ccy": cost_basis,
                     "realized_pl_report_ccy": realized_pl,
@@ -240,11 +244,14 @@ def main():
         finalize_losses_up_to(max_d + timedelta(days=31))
 
     # Write per-sell detail CSV
-    Path("final_result").mkdir(parents=True, exist_ok=True)
+    Path("result").mkdir(parents=True, exist_ok=True)
     with open(args.detail_out, "w", newline="", encoding="utf-8") as f:
         fieldnames = [
             "date", "year", "symbol", "shares_sold",
-            f"proceeds_{args.report_ccy}", f"cost_basis_{args.report_ccy}",
+            f"gross_proceeds_{args.report_ccy}",
+            f"sell_commission_{args.report_ccy}",
+            f"proceeds_{args.report_ccy}",
+            f"cost_basis_{args.report_ccy}",
             f"realized_pl_{args.report_ccy}",
             f"denied_superficial_loss_{args.report_ccy}",
         ]
@@ -256,6 +263,8 @@ def main():
                 "year": rr["year"],
                 "symbol": rr["symbol"],
                 "shares_sold": str(rr["shares_sold"]),
+                f"gross_proceeds_{args.report_ccy}": str(q_money(rr["gross_proceeds_report_ccy"])),
+                f"sell_commission_{args.report_ccy}": str(q_money(rr["sell_commission_report_ccy"])),
                 f"proceeds_{args.report_ccy}": str(q_money(rr["proceeds_report_ccy"])),
                 f"cost_basis_{args.report_ccy}": str(q_money(rr["cost_basis_report_ccy"])),
                 f"realized_pl_{args.report_ccy}": str(q_money(rr["realized_pl_report_ccy"])),
@@ -263,16 +272,36 @@ def main():
             })
 
     # Write annual summary
-    annual = defaultdict(lambda: D0)
+    annual_proceeds    = defaultdict(lambda: D0)
+    annual_cost_basis  = defaultdict(lambda: D0)
+    annual_expenses    = defaultdict(lambda: D0)
+    annual_pl          = defaultdict(lambda: D0)
     for rr in realized_rows:
-        annual[int(rr["year"])] += rr["realized_pl_report_ccy"]
+        y = int(rr["year"])
+        annual_proceeds[y]   += rr["gross_proceeds_report_ccy"]
+        annual_cost_basis[y] += rr["cost_basis_report_ccy"]
+        annual_expenses[y]   += rr["sell_commission_report_ccy"]
+        annual_pl[y]         += rr["realized_pl_report_ccy"]
 
     with open(args.annual_out, "w", newline="", encoding="utf-8") as f:
-        fieldnames = ["year", f"realized_pl_{args.report_ccy}"]
+        c = args.report_ccy
+        fieldnames = [
+            "year",
+            f"proceeds_{c}",
+            f"cost_basis_{c}",
+            f"expenses_{c}",
+            f"realized_pl_{c}",
+        ]
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
-        for y in sorted(annual.keys()):
-            w.writerow({"year": y, f"realized_pl_{args.report_ccy}": str(q_money(annual[y]))})
+        for y in sorted(annual_pl.keys()):
+            w.writerow({
+                "year": y,
+                f"proceeds_{c}":    str(q_money(annual_proceeds[y])),
+                f"cost_basis_{c}":  str(q_money(annual_cost_basis[y])),
+                f"expenses_{c}":    str(q_money(annual_expenses[y])),
+                f"realized_pl_{c}": str(q_money(annual_pl[y])),
+            })
 
     # Write augmented CSV in ORIGINAL input order (so it looks like "input + one col")
     acb_col = f"acb_per_share_{args.report_ccy}"

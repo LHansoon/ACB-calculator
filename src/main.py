@@ -94,7 +94,7 @@ def sanitize_wealthsimple(file_path):
 
     # 处理Detailed的CSV
     # read from the more detailed df, sanitize the format ⚠️警告：hard coded path
-    df_detailed = pd.read_csv("wealthsimple_detailed.csv", dtype=str)
+    df_detailed = pd.read_csv("Wealthsimple/result/wealthsimple_detailed.csv", dtype=str)
     df_detailed["filled_time"] = pd.to_datetime(df_detailed["filled_time"], utc=True)
     df_detailed["tmp_filled_date"] = df_detailed["filled_time"].dt.date
     # Do the same thing for df
@@ -222,8 +222,8 @@ def sanitize(file, type):
 
 def main():
     source_files = {
-        "questrade.csv": "questrade",
-        "merged_wealthsimple.csv"  : "wealthsimple"
+        "data_container/questrade.csv": "questrade",
+        "Wealthsimple/result/merged_wealthsimple.csv": "wealthsimple"
     }
 
     file_dfs = []
@@ -249,14 +249,16 @@ def main():
     # 这里是因为date这个column实际上是date。。所以需要改成str再去map
     df["fx"] = df["date"].dt.strftime("%Y-%m-%d").map(usd_cad)
 
-    df.to_csv("output.csv", index=False)
+    from pathlib import Path
+    Path("result").mkdir(exist_ok=True)
+    df.to_csv("result/combined_trades.csv", index=False)
 
     # 这里输出的东西就是需要修改的内容的提示
     filtered_df = df[
         df.groupby(["date", "symbol"])["account"]
         .transform("nunique") > 1
         ]
-    filtered_df.to_csv("output_problematic_entries.csv", index=False)
+    filtered_df.to_csv("result/output_problematic_entries.csv", index=False)
 
 
 main()

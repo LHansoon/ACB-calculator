@@ -24,7 +24,8 @@ def merge_csvs(input_dir: str, output_file: str):
     print(f"Merged {len(csv_files)} files -> {output_file}")
 
 if __name__ == "__main__":
+    Path("result").mkdir(exist_ok=True)
     merge_csvs(
-        input_dir="data_container/ws_statements",     # 你的 CSV 文件夹
-        output_file="merged_wealthsimple.csv"     # 输出文件
+        input_dir="data_container/ws_statements",
+        output_file="result/merged_wealthsimple.csv"
     )

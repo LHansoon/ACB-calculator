@@ -109,6 +109,7 @@ def process_har(har_dict):
 
 
 DATA_PATH = "data_container/"
+RESULT_PATH = "result/"
 
 
 
@@ -125,10 +126,11 @@ def main():
         if len(value.keys()) != 6:
             print(f"{key}: missing value, its filled time is: {value.get('filled_time')}")
 
+    Path(RESULT_PATH).mkdir(exist_ok=True)
     df = pd.DataFrame.from_dict(processed_dict, orient="index").reset_index(drop=True)
-    df.to_csv("wealthsimple_detailed.csv", index=False)
+    df.to_csv(RESULT_PATH + "wealthsimple_detailed.csv", index=False)
 
-    with open("output.json", "w", encoding="utf-8") as f:
+    with open(RESULT_PATH + "output.json", "w", encoding="utf-8") as f:
         json.dump(processed_dict, f, ensure_ascii=False, indent=2)
 
 if __name__ == '__main__':
