@@ -2,7 +2,7 @@ import pandas
 import requests
 from decimal import Decimal
 import pandas as pd
-import uuid
+import re
 
 def get_exchange_rate(start_date, end_date, target_currency_code="USDCAD"):
     code = f"FX{target_currency_code}"
@@ -26,7 +26,7 @@ def get_exchange_rate(start_date, end_date, target_currency_code="USDCAD"):
 
 
 DTYPE_MAPPING = {
-    "security"            : "string",
+    "symbol"              : "string",
     "type"                : "string",
     "total_or_share"      : "string",
     "amount"              : "object",
@@ -42,17 +42,28 @@ DTYPE_MAPPING = {
 
 def sanitize_wealthsimple(file_path):
     MAPPING = {
-        "transaction": "type",
-        "symbol": "security",
-        "share": "shares"
+        "transaction": "type"
     }
 
     # rename cols
     df = pd.read_csv(file_path)
     df = df.rename(columns=MAPPING)
 
+    PATTERN = re.compile(
+        r'^(?P<symbol>[A-Z0-9.\-]+)\s+-\s+.*?:\s+'
+        r'(?:Bought|Sold)\s+(?P<shares>\d+(?:\.\d+)?)\s+shares\s+'
+        r'\(executed at\s+(?P<executed_at>\d{4}-\d{2}-\d{2})\)',
+        re.IGNORECASE
+    )
+
+    extracted = df["description"].str.extract(PATTERN)
+
+    df["symbol"] = extracted["symbol"]
+    df["shares"] = extracted["shares"]
+    df["execute_time"] = extracted["executed_at"]
+
     # remove and add columns
-    col_to_keep = ["date", "type", "amount", "currency", "security", "shares"]
+    col_to_keep = ["date", "type", "amount", "currency", "symbol", "execute_time", "shares"]
     col_to_add  = {"commission": 0,
                    "total_or_share": "Total",
                    "fx": pandas.NA,
@@ -66,36 +77,99 @@ def sanitize_wealthsimple(file_path):
 
     # set datatype
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["execute_time"] = pd.to_datetime(df["execute_time"], errors="coerce")
     df = df.astype(DTYPE_MAPPING)
 
     # convert datatype
-    df["amount"] = df["amount"].map(lambda x: Decimal(str(x))).astype("object")
+    df["amount"] = df["amount"].map(lambda x: abs(Decimal(str(x)))).astype("object")
+    df["amount"] = abs(df["amount"])
     df["shares"] = df["shares"].map(lambda x: Decimal(str(x))).astype("object")
+    df["shares"] = abs(df["shares"])
     df["commission"] = df["commission"].map(lambda x: Decimal(str(x))).astype("object")
+    df["commission"] = abs(df["commission"])
 
     # filter out base on transaction type
     types = ["BUYTOOPEN", "SELLTOCLOSE", "CONT", "FEE", "REFER", "TRFIN", "TRFOUT"]
     df = df[~df["type"].isin(types)]
 
-    # adding in day incremental id, start from 0
-    df["in_day_id"] = df.groupby("date").cumcount()
+    # 处理Detailed的CSV
+    # read from the more detailed df, sanitize the format ⚠️警告：hard coded path
+    df_detailed = pd.read_csv("wealthsimple_detailed.csv", dtype=str)
+    df_detailed["filled_time"] = pd.to_datetime(df_detailed["filled_time"], utc=True)
+    df_detailed["tmp_filled_date"] = df_detailed["filled_time"].dt.date
+    # Do the same thing for df
+    df["tmp_filled_date"] = df["execute_time"].dt.date
 
-    return df
+    df_detailed["type"] = df_detailed["type"].str.upper()
+
+    # 把这个也转换成decimal
+    df_detailed["total_amount"] = df_detailed["total_amount"].apply( lambda x: Decimal(x) )
+
+    # 然后固定成同样的小数点，放到一个tmp col里面
+    def dec_key(d: Decimal) -> str:
+        return format(d.quantize(Decimal("0.00001")), "f")
+    df["tmp_amount_key"] = df["amount"].apply(dec_key)
+    df_detailed["tmp_amount_key"] = df_detailed["total_amount"].apply(dec_key)
+
+
+    # Pre-Merge processing：修改一下symbol
+    df["symbol"] = df["symbol"].str.replace('SONDQ', 'SOND', regex=False)
+    df_detailed["symbol"] = df_detailed["symbol"].str.replace('SONDQ', 'SOND', regex=False)
+
+
+    #sort一下，这里又要引入一个新的tmp id来merge，有点像in_day_id
+    df_detailed = df_detailed.sort_values(
+        by=["filled_time"],
+        ascending=[True],
+        kind="mergesort"
+    )
+    df_detailed["tmp_merge_id"] = df_detailed.groupby(["symbol", "type", "tmp_amount_key"]).cumcount()
+    df["tmp_merge_id"] = df.groupby(["symbol", "type", "tmp_amount_key"]).cumcount()
+
+
+    merged = df.merge(
+        df_detailed[
+            ["symbol", "type", "tmp_amount_key", "filled_time", "tmp_merge_id"]
+        ],
+        left_on=["symbol", "type", "tmp_amount_key", "tmp_merge_id"],
+        right_on=["symbol", "type", "tmp_amount_key", "tmp_merge_id"],
+        how="left"
+    )
+
+    merged["execute_time"] = merged["filled_time"]
+    merged = merged.drop(columns=["tmp_amount_key", "tmp_filled_date", "filled_time", "tmp_merge_id"])
+
+    merged["execute_time"] = (
+        pd.to_datetime(merged["execute_time"])
+        .dt.tz_convert("Canada/Atlantic")
+    )
+
+    merged = merged.sort_values(
+        by=["date", "execute_time"],
+        ascending=[True, True],
+        kind="mergesort"
+    )
+
+    # adding in day incremental id, start from 0
+    merged["in_day_id"] = merged.groupby("date").cumcount()
+
+    return merged
 
 
 def sanitize_questrade(file_path):
     MAPPING = {
         "Settlement Date": "date",
         "Action": "type",
-        "Symbol": "security",
+        "Symbol": "symbol",
         "Quantity": "shares",
         "Gross Amount": "amount",
         "Commission": "commission",
-        "Currency": "currency"
+        "Currency": "currency",
+        "Transaction Date": "execute_time"
     }
     df = pd.read_csv(file_path)
     df = df.rename(columns=MAPPING)
-    col_to_keep = ["date", "type", "amount", "currency", "security", "shares", "commission"]
+    col_to_keep = ["date", "type", "amount", "currency", "symbol", "shares", "commission", "execute_time"]
     col_to_add  = {"total_or_share": "Total",
                    "fx": pandas.NA,
                    "is_price_fx": pandas.NA,
@@ -112,15 +186,28 @@ def sanitize_questrade(file_path):
 
     # convert datatype
     df["amount"] = df["amount"].map(lambda x: Decimal(str(x))).astype("object")
+    df["amount"] = abs(df["amount"])
     df["shares"] = df["shares"].map(lambda x: Decimal(str(x))).astype("object")
+    df["shares"] = abs(df["shares"])
     df["commission"] = df["commission"].map(lambda x: Decimal(str(x))).astype("object")
+    df["commission"] = abs(df["commission"])
 
     # filter out base on transaction type
     types = ["DEP", "EFT", "FCH", "CON"]
     df = df[~df["type"].isin(types)]
 
+    df = df.sort_index(ascending=False)
+
     # adding in day incremental id, start from 0
-    df["in_day_id"] = df.groupby("date").cumcount()
+    df["in_day_id"] = df.groupby(["date", "execute_time"]).cumcount()
+
+    # replaceing some symbols
+    mapping = {
+        "U079524": "HISU",
+        "G036247": "DLR.TO",
+    }
+
+    df["symbol"] = df["symbol"].map(mapping).fillna(df["symbol"])
 
     return df
 
@@ -134,15 +221,9 @@ def sanitize(file, type):
 
 
 def main():
-    start_date = "2023-01-01"
-    end_date = "2025-12-31"
-
-    # Get exchange rate from Canadian Central Bank
-    usd_cad = get_exchange_rate(start_date, end_date, "USDCAD")
-
     source_files = {
-        "Questrade.csv": "questrade",
-        "WS_temp.csv"  : "wealthsimple"
+        "questrade.csv": "questrade",
+        "merged_wealthsimple.csv"  : "wealthsimple"
     }
 
     file_dfs = []
@@ -156,6 +237,12 @@ def main():
         kind="mergesort"
     )
 
+    # FX
+    start_date = df["date"].min().strftime("%Y-%m-%d")
+    end_date   = df["date"].max().strftime("%Y-%m-%d")
+    # Get exchange rate from Canadian Central Bank
+    usd_cad = get_exchange_rate(start_date, end_date, "USDCAD")
+
     # 更新一下这个flag
     df["is_price_fx"]      = df["currency"] != "CAD"
     df["is_commission_fx"] = df["currency"] != "CAD"
@@ -166,10 +253,10 @@ def main():
 
     # 这里输出的东西就是需要修改的内容的提示
     filtered_df = df[
-        df.groupby(["date", "security"])["account"]
+        df.groupby(["date", "symbol"])["account"]
         .transform("nunique") > 1
         ]
-    filtered_df.to_csv("problematic_entries.csv", index=False)
+    filtered_df.to_csv("output_problematic_entries.csv", index=False)
 
 
 main()
