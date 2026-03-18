@@ -13,11 +13,12 @@ Outputs:
 
 import argparse
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from decimal import Decimal, getcontext, ROUND_HALF_UP
 from collections import defaultdict, deque
 from pathlib import Path
+from typing import Optional
 
 getcontext().prec = 28
 
@@ -62,8 +63,9 @@ class PendingLoss:
     year: int
     symbol: str
     shares_sold: Decimal
-    loss_amount: Decimal   # positive amount in report currency
-    sale_id: int           # index into realized rows list
+    loss_amount: Decimal          # positive amount in report currency
+    sale_id: int                  # index into realized rows list
+    acquired_and_held: Optional[Decimal] = field(default=None)  # snapshotted at end_date
 
 
 def main():
@@ -98,6 +100,33 @@ def main():
             rows.append(row)
 
 
+    def snapshot_pending_losses_if_needed(prev_date: Optional[date], curr_date: date):
+        # CRA rule: a loss is superficial if the replacement shares are still held at the END
+        # of the 30-day window (sale_date + 30). We must check the lots state AT that exact
+        # date, not at finalization time — because the replacement shares might be sold in the
+        # gap between end_date and the next trade that triggers finalization.
+        #
+        # Example of the edge case:
+        #   Jan 1:  Sell X at a loss  → window end_date = Jan 31
+        #   Jan 15: Buy X back        → replacement lot added
+        #   Feb 3:  Sell X again      → replacement lot popped (shares_remaining = 0)
+        #   Feb 20: Next trade        → finalize triggered; lot is already gone → denial missed
+        #
+        # Fix: snapshot acquired_and_held BEFORE curr_date's transactions, at the first
+        # trade date that crosses each end_date. This captures the lots state as of end_date.
+        for pl in pending_losses:
+            if pl.acquired_and_held is not None:
+                continue  # already snapshotted
+            if prev_date is None or prev_date <= pl.end_date < curr_date:
+                sym = pl.symbol
+                start = pl.sale_date - timedelta(days=30)
+                end = pl.end_date
+                count = D0
+                for lot in lots[sym]:
+                    if lot.shares_remaining > D0 and start <= lot.acq_date <= end:
+                        count += lot.shares_remaining
+                pl.acquired_and_held = count
+
     def finalize_losses_up_to(current_date: date):
         """Finalize superficial losses whose end_date <= current_date."""
         nonlocal pending_losses
@@ -105,16 +134,21 @@ def main():
         for pl in pending_losses:
             if current_date > pl.end_date:
                 sym = pl.symbol
-                start = pl.sale_date - timedelta(days=30)
-                end = pl.end_date
 
-                # shares acquired in window that are still held at end_date
-                acquired_and_held = D0
-                for lot in lots[sym]:
-                    if lot.shares_remaining <= D0:
-                        continue
-                    if start <= lot.acq_date <= end:
-                        acquired_and_held += lot.shares_remaining
+                # Use the snapshotted value captured at end_date (before lots were modified
+                # by subsequent trades). Fallback to current lots only if snapshot wasn't
+                # taken, which shouldn't happen in normal flow.
+                if pl.acquired_and_held is not None:
+                    acquired_and_held = pl.acquired_and_held
+                else:
+                    start = pl.sale_date - timedelta(days=30)
+                    end = pl.end_date
+                    acquired_and_held = D0
+                    for lot in lots[sym]:
+                        if lot.shares_remaining <= D0:
+                            continue
+                        if start <= lot.acq_date <= end:
+                            acquired_and_held += lot.shares_remaining
 
                 denied_shares = min(pl.shares_sold, acquired_and_held)
 
@@ -140,8 +174,11 @@ def main():
     # For augmented output: capture the realtime ACB per share after each row (in sorted order)
     augmented_acb_by_orig_idx = {}
 
+    prev_date: Optional[date] = None
     for row in rows:
         row_date = row["date_obj"]
+        # snapshot acquired_and_held for any window that closed since the last trade
+        snapshot_pending_losses_if_needed(prev_date, row_date)
         # finalize losses that have become known by this date (end of 30-day window reached)
         finalize_losses_up_to(row_date)
 
@@ -235,11 +272,14 @@ def main():
             acb_per_share = D0
 
         augmented_acb_by_orig_idx[row["_orig_idx"]] = q_money(acb_per_share)
+        prev_date = row_date
 
     # finalize remaining pending losses after last trade (not tied to any input row)
     if rows:
         max_d = max(r["date_obj"] for r in rows)
-        finalize_losses_up_to(max_d + timedelta(days=31))
+        final_d = max_d + timedelta(days=31)
+        snapshot_pending_losses_if_needed(prev_date, final_d)
+        finalize_losses_up_to(final_d)
 
     # Write per-sell detail CSV
     Path("result").mkdir(parents=True, exist_ok=True)
