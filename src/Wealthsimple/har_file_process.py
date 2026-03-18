@@ -14,8 +14,8 @@ def get_har_file(path):
 
     har_files = list(base_dir.rglob("*.har"))
 
-    for f in har_files:
-        with open(f, "r", encoding="utf-8") as f:
+    for har_file in har_files:
+        with open(har_file, "r", encoding="utf-8") as f:
             har_dict = json.load(f)
 
     return har_dict
