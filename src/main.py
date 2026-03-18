@@ -139,7 +139,7 @@ def sanitize_wealthsimple(file_path):
         how="left"
     )
 
-    merged = merged.drop(columns=["tmp_amount_key", "tmp_filled_date", "tmp_merge_id"])
+    merged = merged.drop(columns=["tmp_amount_key", "tmp_filled_date", "tmp_merge_id", "execute_time"])
     merged = merged.rename(columns={"filled_time": "execute_time"})
 
     merged = merged.sort_values(

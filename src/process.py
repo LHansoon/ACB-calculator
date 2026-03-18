@@ -5,10 +5,10 @@
 ACB (average cost) + Annual realized P/L with Canadian superficial loss (±30 days) handling.
 All money math uses Decimal.
 
-NEW:
-- Outputs an "augmented" CSV: same as input, plus one column with real-time ACB per share
-  after each processed row (in execution order).
-- Sorts by execute_time converted to America/Halifax (DST-aware). Falls back to date 00:00 Halifax.
+Outputs:
+- realized_trades.csv: per-sell detail with gross proceeds, cost basis, sell commission, P/L
+- annual_pl.csv: annual summary with proceeds, cost basis, expenses, and realized P/L
+- augmented_with_acb.csv: input trades + real-time ACB per share column
 """
 
 import argparse
@@ -270,35 +270,43 @@ def main():
             })
 
     # Write annual summary
-    annual_proceeds    = defaultdict(lambda: D0)
-    annual_cost_basis  = defaultdict(lambda: D0)
-    annual_expenses    = defaultdict(lambda: D0)
-    annual_pl          = defaultdict(lambda: D0)
+    annual_proceeds      = defaultdict(lambda: D0)
+    annual_cost_basis    = defaultdict(lambda: D0)
+    annual_expenses      = defaultdict(lambda: D0)
+    annual_denied_loss   = defaultdict(lambda: D0)
+    annual_pl            = defaultdict(lambda: D0)
     for rr in realized_rows:
         y = int(rr["year"])
-        annual_proceeds[y]   += rr["gross_proceeds_report_ccy"]
-        annual_cost_basis[y] += rr["cost_basis_report_ccy"]
-        annual_expenses[y]   += rr["sell_commission_report_ccy"]
-        annual_pl[y]         += rr["realized_pl_report_ccy"]
+        annual_proceeds[y]    += rr["gross_proceeds_report_ccy"]
+        annual_cost_basis[y]  += rr["cost_basis_report_ccy"]
+        annual_expenses[y]    += rr["sell_commission_report_ccy"]
+        annual_denied_loss[y] += rr["denied_superficial_loss"]
+        annual_pl[y]          += rr["realized_pl_report_ccy"]
 
     with open(args.annual_out, "w", newline="", encoding="utf-8") as f:
         c = args.report_ccy
         fieldnames = [
             "year",
             f"proceeds_{c}",
-            f"cost_basis_{c}",
+            f"adjusted_cost_basis_{c}",
             f"expenses_{c}",
             f"realized_pl_{c}",
+            f"--- for reference ---",
+            f"raw_cost_basis_{c}",
+            f"denied_superficial_loss_{c}",
         ]
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         for y in sorted(annual_pl.keys()):
             w.writerow({
                 "year": y,
-                f"proceeds_{c}":    str(q_money(annual_proceeds[y])),
-                f"cost_basis_{c}":  str(q_money(annual_cost_basis[y])),
-                f"expenses_{c}":    str(q_money(annual_expenses[y])),
-                f"realized_pl_{c}": str(q_money(annual_pl[y])),
+                f"proceeds_{c}":                  str(q_money(annual_proceeds[y])),
+                f"adjusted_cost_basis_{c}":       str(q_money(annual_cost_basis[y] - annual_denied_loss[y])),
+                f"expenses_{c}":                  str(q_money(annual_expenses[y])),
+                f"realized_pl_{c}":               str(q_money(annual_pl[y])),
+                f"--- for reference ---":         "",
+                f"raw_cost_basis_{c}":            str(q_money(annual_cost_basis[y])),
+                f"denied_superficial_loss_{c}":   str(q_money(annual_denied_loss[y])),
             })
 
     # Write augmented CSV in ORIGINAL input order (so it looks like "input + one col")
