@@ -70,7 +70,7 @@ class PendingLoss:
 
 def main():
     ap = argparse.ArgumentParser(description="ACB + Superficial Loss Calculator (Canada)")
-    ap.add_argument("--input_csv", default="result/combined_trades.csv", help="Input trades CSV (default: result/combined_trades.csv)")
+    ap.add_argument("--input_csv", default="data_container/combined_trades.csv", help="Input trades CSV (default: data_container/combined_trades.csv)")
     ap.add_argument("--report_ccy", default="CAD", help="Reporting currency (default: CAD)")
     ap.add_argument("--annual_out", default="result/annual_pl.csv", help="Annual realized P/L output CSV")
     ap.add_argument("--detail_out", default="result/realized_trades.csv", help="Per-sell detail output CSV")

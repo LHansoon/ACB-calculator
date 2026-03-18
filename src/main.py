@@ -265,14 +265,14 @@ def main():
 
     from pathlib import Path
     Path("result").mkdir(exist_ok=True)
-    df.to_csv("result/combined_trades.csv", index=False)
+    df.to_csv("data_container/combined_trades.csv", index=False)
 
     # 这里输出的东西就是需要修改的内容的提示
     filtered_df = df[
         df.groupby(["date", "symbol"])["account"]
         .transform("nunique") > 1
         ]
-    filtered_df.to_csv("result/output_problematic_entries.csv", index=False)
+    filtered_df.to_csv("data_container/output_problematic_entries.csv", index=False)
 
 
 main()
