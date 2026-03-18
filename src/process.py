@@ -18,11 +18,9 @@ from datetime import datetime, date, timedelta
 from decimal import Decimal, getcontext, ROUND_HALF_UP
 from collections import defaultdict, deque
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 getcontext().prec = 28
 
-HALIFAX_TZ = ZoneInfo("America/Halifax")
 D0 = Decimal("0")
 
 

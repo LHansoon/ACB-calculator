@@ -1,8 +1,10 @@
-import pandas
+import warnings
 import requests
 from decimal import Decimal
 import pandas as pd
 import re
+
+warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 
 def get_exchange_rate(start_date, end_date, target_currency_code="USDCAD"):
     code = f"FX{target_currency_code}"
@@ -66,18 +68,18 @@ def sanitize_wealthsimple(file_path):
     col_to_keep = ["date", "type", "amount", "currency", "symbol", "execute_time", "shares"]
     col_to_add  = {"commission": 0,
                    "total_or_share": "Total",
-                   "fx": pandas.NA,
-                   "is_price_fx": pandas.NA,
+                   "fx": pd.NA,
+                   "is_price_fx": pd.NA,
                    "is_commission_fx": False,
                    "account": "wealthsimple",
-                   "in_day_id": pandas.NA
+                   "in_day_id": pd.NA
                    }
     df = df[col_to_keep]
     df = df.assign(**col_to_add)
 
     # set datatype
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["execute_time"] = pd.to_datetime(df["execute_time"], errors="coerce")
+    df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
+    df["execute_time"] = pd.to_datetime(df["execute_time"], format="%Y-%m-%d", errors="coerce")
     df = df.astype(DTYPE_MAPPING)
 
     # convert datatype
@@ -95,7 +97,7 @@ def sanitize_wealthsimple(file_path):
     # 处理Detailed的CSV
     # read from the more detailed df, sanitize the format ⚠️警告：hard coded path
     df_detailed = pd.read_csv("Wealthsimple/result/wealthsimple_detailed.csv", dtype=str)
-    df_detailed["filled_time"] = pd.to_datetime(df_detailed["filled_time"], utc=True)
+    df_detailed["filled_time"] = pd.to_datetime(df_detailed["filled_time"], format="ISO8601", utc=True)
     df_detailed["tmp_filled_date"] = df_detailed["filled_time"].dt.date
     # Do the same thing for df
     df["tmp_filled_date"] = df["execute_time"].dt.date
@@ -136,13 +138,8 @@ def sanitize_wealthsimple(file_path):
         how="left"
     )
 
-    merged["execute_time"] = merged["filled_time"]
-    merged = merged.drop(columns=["tmp_amount_key", "tmp_filled_date", "filled_time", "tmp_merge_id"])
-
-    merged["execute_time"] = (
-        pd.to_datetime(merged["execute_time"])
-        .dt.tz_convert("Canada/Atlantic")
-    )
+    merged = merged.drop(columns=["tmp_amount_key", "tmp_filled_date", "tmp_merge_id"])
+    merged = merged.rename(columns={"filled_time": "execute_time"})
 
     merged = merged.sort_values(
         by=["date", "execute_time"],
@@ -158,30 +155,30 @@ def sanitize_wealthsimple(file_path):
 
 def sanitize_questrade(file_path):
     MAPPING = {
-        "Settlement Date": "date",
+        "Transaction Date": "date",
         "Action": "type",
         "Symbol": "symbol",
         "Quantity": "shares",
         "Gross Amount": "amount",
         "Commission": "commission",
         "Currency": "currency",
-        "Transaction Date": "execute_time"
     }
     df = pd.read_csv(file_path)
     df = df.rename(columns=MAPPING)
-    col_to_keep = ["date", "type", "amount", "currency", "symbol", "shares", "commission", "execute_time"]
+    col_to_keep = ["date", "type", "amount", "currency", "symbol", "shares", "commission"]
     col_to_add  = {"total_or_share": "Total",
-                   "fx": pandas.NA,
-                   "is_price_fx": pandas.NA,
+                   "execute_time": pd.NaT,  # Questrade time is not meaningful (fake 9:30 AM)
+                   "fx": pd.NA,
+                   "is_price_fx": pd.NA,
                    "is_commission_fx": False,
                    "account": "questrade",
-                   "in_day_id": pandas.NA
+                   "in_day_id": pd.NA
                    }
     df = df[col_to_keep]
     df = df.assign(**col_to_add)
 
-    # set datatype
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    # set datatype — Transaction Date is "2024-01-15 9:30:00 AM", normalize to date only
+    df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d %I:%M:%S %p", errors="coerce").dt.normalize()
     df = df.astype(DTYPE_MAPPING)
 
     # convert datatype
@@ -199,7 +196,11 @@ def sanitize_questrade(file_path):
     df = df.sort_index(ascending=False)
 
     # adding in day incremental id, start from 0
-    df["in_day_id"] = df.groupby(["date", "execute_time"]).cumcount()
+    # Note: Questrade exports don't include real execution times (the time component is always
+    # a fake 9:30 AM), so execute_time is NaT and intra-day ordering is date-level only.
+    # If Questrade ever provides real execution times, map that column to execute_time and
+    # change this groupby to ["date", "execute_time"] to properly handle after-hours trades.
+    df["in_day_id"] = df.groupby("date").cumcount()
 
     # replaceing some symbols
     mapping = {
