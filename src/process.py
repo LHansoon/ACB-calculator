@@ -13,12 +13,36 @@ Outputs:
 
 import argparse
 import csv
+import warnings
+import requests
 from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from decimal import Decimal, getcontext, ROUND_HALF_UP
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Optional
+
+warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
+
+
+def get_exchange_rate(start_date: str, end_date: str, target_currency_code: str = "USDCAD") -> dict:
+    code = f"FX{target_currency_code}"
+    url = f"https://www.bankofcanada.ca/valet/observations/{code}/json?start_date={start_date}&end_date={end_date}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        observations = data.get("observations", [])
+        if observations:
+            result = {}
+            for rec in observations:
+                v = rec.get(code, {}).get("v", "")
+                result[rec["d"]] = Decimal(v) if v else D0
+            return result
+        else:
+            print("No exchange rate data available for the given date range.")
+    else:
+        print(f"Error fetching exchange rate: {response.status_code}")
+    return {}
 
 getcontext().prec = 28
 
@@ -99,6 +123,29 @@ def main():
 
             rows.append(row)
 
+
+    # Auto-fetch FX rates for non-CAD rows where fx was not provided in the CSV
+    fx_needed = [r for r in rows if r.get("currency", "").strip().upper() != "CAD"
+                 and not r.get("fx", "").strip()]
+    if fx_needed:
+        fx_dates = [r["date_obj"] for r in fx_needed]
+        start_str = min(fx_dates).strftime("%Y-%m-%d")
+        end_str   = max(fx_dates).strftime("%Y-%m-%d")
+        print(f"Fetching USDCAD rates from Bank of Canada ({start_str} to {end_str})...")
+        usd_cad = get_exchange_rate(start_str, end_str)
+        # Forward-fill weekends / holidays with the preceding business day's rate
+        cursor, end_d, last_known = min(fx_dates), max(fx_dates), None
+        while cursor <= end_d:
+            key = cursor.strftime("%Y-%m-%d")
+            if key in usd_cad:
+                last_known = usd_cad[key]
+            elif last_known is not None:
+                usd_cad[key] = last_known
+            cursor += timedelta(days=1)
+        for r in fx_needed:
+            key = r["date_obj"].strftime("%Y-%m-%d")
+            if key in usd_cad:
+                r["fx"] = str(usd_cad[key])
 
     def snapshot_pending_losses_if_needed(prev_date: Optional[date], curr_date: date):
         # CRA rule: a loss is superficial if the replacement shares are still held at the END

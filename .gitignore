@@ -19,5 +19,6 @@ venv/
 # Data files (contain personal trading history)
 *.csv
 *.json
+!src/manual_template.csv
 src/final_result/
 src/Wealthsimple/data_container/

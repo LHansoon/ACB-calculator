@@ -1,31 +1,6 @@
-import warnings
-import requests
-from datetime import datetime, timedelta
 from decimal import Decimal
 import pandas as pd
 import re
-
-warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
-
-def get_exchange_rate(start_date, end_date, target_currency_code="USDCAD"):
-    code = f"FX{target_currency_code}"
-    url = f"https://www.bankofcanada.ca/valet/observations/{code}/json?start_date={start_date}&end_date={end_date}"
-    response = requests.get(url)
-
-    if response.status_code == 200:
-        data = response.json()
-        observations = data.get("observations", [])
-
-        if observations:
-            result = {}
-            for each_record in observations:
-                result[each_record.get("d")] = each_record.get(code).get("v")
-                result[each_record.get("d")] = Decimal(result[each_record.get("d")]) if result[each_record.get("d")] != "" else 0
-            return result
-        else:
-            print("No exchange rate data available for the given date range.")
-    else:
-        print(f"Error fetching data: {response.status_code}")
 
 
 DTYPE_MAPPING = {
@@ -35,9 +10,6 @@ DTYPE_MAPPING = {
     "amount"              : "object",
     "shares"              : "object",
     "commission"          : "object",
-    "fx"                  : "object",
-    "is_price_fx"         : "boolean",
-    "is_commission_fx"    : "boolean",
     "currency"            : "string",
     "in_day_id"           : "string"
 }
@@ -69,9 +41,6 @@ def sanitize_wealthsimple(file_path):
     col_to_keep = ["date", "type", "amount", "currency", "symbol", "execute_time", "shares"]
     col_to_add  = {"commission": 0,
                    "total_or_share": "Total",
-                   "fx": pd.NA,
-                   "is_price_fx": pd.NA,
-                   "is_commission_fx": False,
                    "account": "wealthsimple",
                    "in_day_id": pd.NA
                    }
@@ -169,9 +138,6 @@ def sanitize_questrade(file_path):
     col_to_keep = ["date", "type", "amount", "currency", "symbol", "shares", "commission"]
     col_to_add  = {"total_or_share": "Total",
                    "execute_time": pd.NaT,  # Questrade time is not meaningful (fake 9:30 AM)
-                   "fx": pd.NA,
-                   "is_price_fx": pd.NA,
-                   "is_commission_fx": False,
                    "account": "questrade",
                    "in_day_id": pd.NA
                    }
@@ -238,30 +204,6 @@ def main():
         ascending=[True, True],
         kind="mergesort"
     )
-
-    # FX
-    start_date = df["date"].min().strftime("%Y-%m-%d")
-    end_date   = df["date"].max().strftime("%Y-%m-%d")
-    # Get exchange rate from Canadian Central Bank
-    usd_cad = get_exchange_rate(start_date, end_date, "USDCAD")
-
-    # Fill weekend/holiday gaps with the preceding business day's rate
-    cursor = datetime.strptime(start_date, "%Y-%m-%d").date()
-    end_d  = datetime.strptime(end_date,   "%Y-%m-%d").date()
-    last_known = None
-    while cursor <= end_d:
-        key = cursor.strftime("%Y-%m-%d")
-        if key in usd_cad:
-            last_known = usd_cad[key]
-        elif last_known is not None:
-            usd_cad[key] = last_known
-        cursor += timedelta(days=1)
-
-    # 更新一下这个flag
-    df["is_price_fx"]      = df["currency"] != "CAD"
-    df["is_commission_fx"] = df["currency"] != "CAD"
-    # 这里是因为date这个column实际上是date。。所以需要改成str再去map
-    df["fx"] = df["date"].dt.strftime("%Y-%m-%d").map(usd_cad)
 
     from pathlib import Path
     Path("result").mkdir(exist_ok=True)

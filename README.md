@@ -114,6 +114,36 @@ python process.py
 
 ---
 
+## 其他券商 / 手动 CSV 输入
+
+如果你的券商不是 Wealthsimple 或 Questrade，可以直接填写 `src/manual_template.csv`，跳过前三步，直接运行 `process.py`。
+
+### 格式说明
+
+| 列名 | 说明 |
+|---|---|
+| `date` | 交易日期，格式 `YYYY-MM-DD`（使用**交易日**，非结算日） |
+| `type` | `BUY` 或 `SELL` |
+| `symbol` | 股票代码，如 `MFC`、`AAPL` |
+| `shares` | 股数，始终为正数 |
+| `amount` | 金额，始终为正数；含义由 `total_or_share` 决定 |
+| `total_or_share` | `Total`（amount = 整笔交易金额）或 `Share`（amount = 每股价格） |
+| `commission` | 手续费，始终为正数；无手续费填 `0` |
+| `currency` | `CAD` 或 `USD` |
+
+USD/CAD 汇率由程序自动从加拿大央行获取，无需手动填写。
+
+### 运行方式
+
+```bash
+cd src
+python process.py --input_csv manual_template.csv
+```
+
+结果同样输出到 `result/`。
+
+---
+
 ## 报税：如何填写 Wealthsimple Tax
 
 打开 `result/annual_pl.csv`，按年份填入以下字段：
