@@ -1,5 +1,6 @@
 import warnings
 import requests
+from datetime import datetime, timedelta
 from decimal import Decimal
 import pandas as pd
 import re
@@ -243,6 +244,18 @@ def main():
     end_date   = df["date"].max().strftime("%Y-%m-%d")
     # Get exchange rate from Canadian Central Bank
     usd_cad = get_exchange_rate(start_date, end_date, "USDCAD")
+
+    # Fill weekend/holiday gaps with the preceding business day's rate
+    cursor = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_d  = datetime.strptime(end_date,   "%Y-%m-%d").date()
+    last_known = None
+    while cursor <= end_d:
+        key = cursor.strftime("%Y-%m-%d")
+        if key in usd_cad:
+            last_known = usd_cad[key]
+        elif last_known is not None:
+            usd_cad[key] = last_known
+        cursor += timedelta(days=1)
 
     # 更新一下这个flag
     df["is_price_fx"]      = df["currency"] != "CAD"
