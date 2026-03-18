@@ -48,7 +48,7 @@ def process_har(har_dict):
             request_text = json.loads(request_text)
 
         except Exception as e:
-            error = "⚠️：response结构错误\n" +  traceback.print_exc()
+            error = "⚠️：response结构错误\n" + traceback.format_exc()
             print(error)
 
 
